@@ -1,0 +1,2156 @@
+local TAG = "GameRuleYNPEMJ"
+local OperationType = require("logic/game/mahjong/operationType")
+local GameCore = require("gamecore")
+
+local GameRuleYNPEMJ = {}
+
+function GameRuleYNPEMJ:init(pGameRound)
+	self.m_pGameRound = pGameRound
+	self.m_pLocalGameType = self.m_pGameRound:onGetGameTable():onGetLocalGameType()
+	self.m_pPlaytype = self.m_pGameRound:onGetGameTable():onGetPlayType()
+	self.m_pPlaytypeConfig = self.m_pGameRound:onGetGameTable().m_pPlaytypeConfig
+	-- Log.d(TAG, "self.m_pLocalGameType[%s]", self.m_pLocalGameType)
+	-- 封顶番数，默认为2番
+	self.m_pFengDing = self.m_pGameRound:onGetGameTable().m_pFriendBattleConfig.iExtendTable.iFengDing or 3
+end
+
+function GameRuleYNPEMJ:onGetGameName()
+	local pBigType = string.format("0x%04x", self.m_pLocalGameType & 0xFF00)
+	local pSmallType = string.format("0x%02x", self.m_pLocalGameType & 0x00FF)
+	if self.m_pPlaytypeConfig.iLocalGameTypeMap then
+		return self.m_pPlaytypeConfig.iLocalGameTypeMap[pBigType][pSmallType].iName
+	end
+	return ""
+end
+
+function GameRuleYNPEMJ:onGetPaytypeStr(pConfTale)
+	if pConfTale.iPayType == DefineType.ROOMCARD_PAYTYPE_OWNER then
+		return "房主支付"
+	elseif pConfTale.iPayType == DefineType.ROOMCARD_PAYTYPE_WINNER then
+		return "大赢家支付"
+	elseif pConfTale.iPayType == DefineType.ROOMCARD_PAYTYPE_SHARE then
+		return "AA支付"
+	end
+	return "房主支付"
+end
+
+function GameRuleYNPEMJ:onGetGameRoundInfo()
+	local pGameRoundInfoTable = {}
+
+	pGameRoundInfoTable.iBiXiaHu = self.m_pGameRound.m_pPreRoundInfo.iBiXiaHu and 1 or 0
+
+	return pGameRoundInfoTable
+end
+
+function GameRuleYNPEMJ:onGameFristRoundStart(pGameUsers)
+	self.m_pUserExtendTable = {}
+	for k, v in pairs(pGameUsers) do
+		self.m_pUserExtendTable[v:onGetUserId()] = {
+			iZiMoCount = 0,
+			iJiePaoCount = 0,
+			iFangPaoCount = 0,
+			iGangCount = 0,
+			iWaiBao = 0,
+			iMaxFan = 0,
+		}
+
+		v:onSetMoney(self:onGetGameUpperLimit())
+	end
+end
+
+function GameRuleYNPEMJ:onGetPlaytypeStr(pConfTale, pUserCount)
+	self.m_pExtendTable = pConfTale.iExtendTable
+	-- 添加局数，封顶
+	local pPlaytypeStr = string.format("%s，%s局", self:onGetGameName(), pConfTale.iBattleTotalRound)
+	pPlaytypeStr = string.format("%s，%d人", pPlaytypeStr, pUserCount)
+	for k, v in pairs(self:onGetLocalGamePlaytypeTable()) do
+		if v.iValue == (self.m_pPlaytype & v.iValue) then
+			pPlaytypeStr = string.format("%s，%s", pPlaytypeStr, v.iName)
+		end
+	end
+	-- 显示封顶番数
+	local pFengDingStr = ""
+	if self.m_pFengDing > 0 then
+		pFengDingStr = string.format("%d番封顶", self.m_pFengDing)
+	else
+		pFengDingStr = "不封顶"
+	end
+	pPlaytypeStr = string.format("%s，%s", pPlaytypeStr, pFengDingStr)
+	if self:isGameSettingEmoji() then
+		pPlaytypeStr = string.format("%s，屏蔽互动表情", pPlaytypeStr)
+	end
+	return pPlaytypeStr
+end
+
+function GameRuleYNPEMJ:onGetUserExtendTable(pUser)
+	if self.m_pUserExtendTable and self.m_pUserExtendTable[pUser:onGetUserId()] then
+		return self.m_pUserExtendTable[pUser:onGetUserId()]
+	end
+end
+
+function GameRuleYNPEMJ:onGetUserExtendInfo(pUser, pReUser)
+	local pGameUserInfo = {}
+	pGameUserInfo.iHuaPai = self.m_pGameRound.m_pUserBuHuaTable[pUser:onGetUserId()]
+
+	return pGameUserInfo
+end
+
+--!
+--! @brief      当一局游戏开始前调用
+--!
+--! @param      pGameRound  The game round
+--!
+--! @return     { description_of_the_return_value }
+--!
+function GameRuleYNPEMJ:onGameRoundStart(pGameRound)
+	self.m_pGameRound = pGameRound
+	self.m_pIsCanZhengChan = false
+	self.m_pIsBiXiaHu = false
+end
+
+function GameRuleYNPEMJ:onGetMahjongPool(pUserCount)
+	-- 将所有的牌都放一张存起来，用来计算听牌
+	self.m_pMahjongOneCardTable = {}
+
+	local poolTable = {}
+	for i = 1, 3 do
+		for j = 1, 9 do
+			local pCardValue = i * 10 + j
+			poolTable[#poolTable + 1] = pCardValue
+			poolTable[#poolTable + 1] = pCardValue
+			poolTable[#poolTable + 1] = pCardValue
+			poolTable[#poolTable + 1] = pCardValue
+
+			self.m_pMahjongOneCardTable[#self.m_pMahjongOneCardTable + 1] = pCardValue
+		end
+	end
+
+	for i = 4, 5 do
+		local len = (i == 4) and 4 or 3
+		for j = 1, len do
+			local pCardValue = i * 10 + j
+			poolTable[#poolTable + 1] = pCardValue
+			poolTable[#poolTable + 1] = pCardValue
+			poolTable[#poolTable + 1] = pCardValue
+			poolTable[#poolTable + 1] = pCardValue
+
+			self.m_pMahjongOneCardTable[#self.m_pMahjongOneCardTable + 1] = pCardValue
+		end
+	end
+
+	local i = 6
+	for j=1, 8 do
+		local pCardValue = i * 10 + j
+		poolTable[#poolTable + 1] = pCardValue
+		self.m_pMahjongOneCardTable[#self.m_pMahjongOneCardTable + 1] = pCardValue	
+	end
+	
+	return poolTable
+end
+
+function GameRuleYNPEMJ:onGetBankerSeatId(pUserCount)
+	-- Log.dump(TAG, self.m_pGameRound.m_pPreRoundInfo, "self.m_pGameRound.m_pPreRoundInfo")
+	if self.m_pGameRound.m_pPreRoundInfo.iHuSeatId and self.m_pGameRound.m_pPreRoundInfo.iHuSeatId > 0 then
+		local pBankerSeatId = self.m_pGameRound.m_pPreRoundInfo.iHuSeatId
+		self.m_pGameRound.m_pPreRoundInfo = {}
+		return pBankerSeatId, {}
+	end
+	if self.m_pGameRound.m_pPreRoundInfo.iLastSeatId and self.m_pGameRound.m_pPreRoundInfo.iLastSeatId > 0 then
+		local pBankerSeatId = self.m_pGameRound.m_pPreRoundInfo.iLastSeatId
+		self.m_pGameRound.m_pPreRoundInfo = {}
+		return pBankerSeatId, {}
+	end
+	self.m_pGameRound.m_pPreRoundInfo = {}
+	local a = math.random(1, 6)
+	local b = math.random(1, 6)
+	return ((a + b - 1) % pUserCount) + 1, {}
+end
+
+function GameRuleYNPEMJ:onGetProcessTable()
+	return {1, 2, 9}
+end
+
+function GameRuleYNPEMJ:isCanXueZhanDaoDi() 
+	return false
+end
+
+function GameRuleYNPEMJ:isCanYiPaoDuoXiang()
+	return true
+end
+
+function GameRuleYNPEMJ:isAutoReady()
+	return true
+end
+
+function GameRuleYNPEMJ:isOldUserReconnenct()
+	return false
+end
+
+function GameRuleYNPEMJ:isLastCardNeedTips(pRemainCard)
+	return pRemainCard == 4, "最后四张牌"
+end
+
+function GameRuleYNPEMJ:onGetNeedRoomCardCount(pPlaytypeConfig, pTotolRound, pMaxUserCount, pPayType)
+	if not self.m_pPlaytypeConfig or not pTotolRound then
+		return 0 
+	end
+	local pBigType = string.format("0x%04x", self.m_pLocalGameType & 0xFF00)
+	local pSmallType = string.format("0x%02x", self.m_pLocalGameType & 0x00FF)
+	local pPlayType = "0x01"
+	if self:isPlaytypeQuanShu(self.m_pPlaytype) then
+		pPlayType = "0x02"
+	end
+
+	if self.m_pPlaytypeConfig.iGameCircleRoomCardTable then
+		for k, v in pairs(self.m_pPlaytypeConfig.iGameCircleRoomCardTable[pBigType][pSmallType][pPlayType] or {}) do
+			if tonumber(k) == pTotolRound then
+				return v.iValue
+			end
+		end
+	end
+	return 0
+end
+
+function GameRuleYNPEMJ:onGetGameUpperLimit()
+	local pLimit = self.m_pExtendTable.iLimit
+	local pBigType = string.format("0x%04x", self.m_pLocalGameType & 0xFF00)
+	local pSmallType = string.format("0x%02x", self.m_pLocalGameType & 0x00FF)
+	local pLimitTable = self.m_pPlaytypeConfig.iGameUpperLimitTable[pBigType][pSmallType] or {}	
+	assert(pLimitTable)
+
+	if pLimit > pLimitTable.iMaxValue then
+		return pLimitTable.iMaxValue
+	end
+
+	if pLimit < pLimitTable.iMinValue then
+		return pLimitTable.iMinValue
+	end
+
+	return pLimit
+end
+
+
+function GameRuleYNPEMJ:isRealCanPeng(pUser, pGameUsers, pHandCardCountMap, pCardValue)
+	local pOutCardMap = pUser:onGetOutCardMap()
+	local pOutCard = pOutCardMap[#pOutCardMap]
+
+	local pRank = pOutCard and pOutCard.iRank or 0
+
+	local pCardCount = 0
+	-- 找到所有需要判断的牌
+	for _, kUser in pairs(pGameUsers) do
+		local pOutCardMap = kUser:onGetOutCardMap()
+		for _, kCard in pairs(pOutCardMap) do
+			if kCard.iRank >= pRank then
+				
+				if kCard.iCardValue == pCardValue then
+					pCardCount = pCardCount + 1
+				end
+			end
+		end
+	end
+	
+	if pCardCount >= 2 then return false end       --碰牌不碰在轮到自己前不能再碰
+	return true
+end
+
+function GameRuleYNPEMJ:onUserHasGuoHu(pUser)
+	Log.d(TAG, "设置成过胡不胡UserId为【%s】", pUser:onGetUserId())
+	pUser:onSetIsGuoHuStatus(true)
+end
+
+function GameRuleYNPEMJ:onUserClearGuoHu(pUser, pStatus)
+	if DefineType.CLEAR_WHEN_DRAWCARD == pStatus then
+		if pUser:onGetIsBaoTing() <= 0 then
+			pUser:onSetIsGuoHuStatus(false)
+		end
+	end
+	if DefineType.CLEAR_WHEN_OUTCARD == pStatus then
+		if pUser:onGetIsBaoTing() <= 0 then
+			pUser:onSetIsGuoHuStatus(false)
+		end
+	end
+end
+
+function GameRuleYNPEMJ:isRealCanHu(pUser, pGameUsers, pIsDraw, pCardValue)
+	if pUser:onGetIsGuoHuStatus() then return end
+	return true
+end
+
+function GameRuleYNPEMJ:onPrintHandCardCountTwoMap(pHandCardCountTwoMap)
+	local pHandCardMap = {}
+	for i = 1, 5 do
+		for j = 1, 9 do
+			for k = 1, pHandCardCountTwoMap[i][j] do
+				pHandCardMap[#pHandCardMap + 1] = i * 10 + j
+			end
+		end
+	end
+	table.sort(pHandCardMap)
+	Log.dump(TAG, pHandCardMap, "pHandCardMap")
+end
+
+function GameRuleYNPEMJ:onGetHuTypeInfo(pGetType, pUser, pHandCardCountTwoMap, pCardValue)
+	local pBlockCardMap = pUser:onGetBlockCardMap()
+	local pUserId = pUser:onGetUserId()
+
+	local pHuInfo = nil
+	local pIsDraw = (0 == pGetType) or (2 == pGetType)
+	if (self:isMenQing(pHandCardCountTwoMap, pBlockCardMap) or self:isFourHardHua(pUserId)) and self:isXiaoQiDui(pHandCardCountTwoMap, pBlockCardMap) then
+		local pQiDuiHuInfo = {}
+		pQiDuiHuInfo.iFan = 0
+		pQiDuiHuInfo.iName = ""
+		local pAddToFanTable = self:onDealAddToFanWhenQiXiaoDui(pHandCardCountTwoMap, pBlockCardMap, pIsDraw)
+		pQiDuiHuInfo.iFan = pQiDuiHuInfo.iFan + pAddToFanTable.iFan
+		pQiDuiHuInfo.iName = string.format("%s %s", pQiDuiHuInfo.iName, pAddToFanTable.iName)
+		pHuInfo = pQiDuiHuInfo
+	end
+	if self:isNormalHu(pHandCardCountTwoMap, false) then 
+		local pPingHuInfo = {} 
+		pPingHuInfo.iFan = 0
+		pPingHuInfo.iName = ""
+		local pAddToFanTable = self:onDealAddToFanWhenPingHu(pHandCardCountTwoMap, pBlockCardMap, pIsDraw)
+		pPingHuInfo.iFan = pPingHuInfo.iFan + pAddToFanTable.iFan
+		if #pAddToFanTable.iName <= 0  and (self:isMenQing(pHandCardCountTwoMap, pBlockCardMap) or self:isFourHardHua(pUserId)) then 
+			pPingHuInfo.iName = "平胡"
+		end
+		pPingHuInfo.iName = string.format("%s %s", pPingHuInfo.iName, pAddToFanTable.iName)
+		
+		if not pHuInfo and #pPingHuInfo.iName > 0 then
+			pHuInfo = pPingHuInfo
+		end
+	end
+
+	if pHuInfo then
+		if self:isWuHuaGuo(pUserId) then
+			pHuInfo.iFan =  pHuInfo.iFan + 30
+			pHuInfo.iName = string.format("%s %s", pHuInfo.iName, "无花果")
+		end
+
+		if self:isYaJue(pBlockCardMap, pCardValue) then
+			pHuInfo.iFan =  pHuInfo.iFan + 20
+			pHuInfo.iName = string.format("%s %s", pHuInfo.iName, "压绝")
+		end
+
+		if self:isMenQing(pHandCardCountTwoMap, pBlockCardMap) then
+			pHuInfo.iFan =  pHuInfo.iFan + 10
+			pHuInfo.iName = string.format("%s %s", pHuInfo.iName, "门清")
+		end
+	end
+	
+	return pHuInfo
+end
+
+--[[
+首张按顺序出东南西北或北西南东，每家付5花
+]]
+function GameRuleYNPEMJ:isDongNanXiBeiFaKuan(pBlockCardMap, pOutCardMap)
+	if #pOutCardMap ~= 4 then return false end
+	local pIsFaKuan = true
+	for i=1, 4 do -- 东南西北
+		if pOutCardMap[i].iCardValue ~= 4*10 + i then
+			pIsFaKuan = false
+			break
+		end
+	end
+
+	if not pIsFaKuan then
+		pIsFaKuan = true
+
+		for i=4, 1, -1 do -- 北西南东
+			if pOutCardMap[i].iCardValue ~= 4*10 + i then
+				pIsFaKuan = false
+				break
+			end
+		end
+	end
+
+	return pIsFaKuan
+end
+
+function GameRuleYNPEMJ:isDoubleDongNanXiBei(pBlockCardMap, pOutCardMap)
+	if #pOutCardMap ~= 8 then return false end
+	local pIsZhengChan = true
+	for i=1, 8 do -- 东南西北 东南西北
+		local j = i < 5 and i or (i - 4)
+		if pOutCardMap[i].iCardValue ~= 4*10 + i then
+			pIsZhengChan = false
+			break
+		end
+	end
+
+	if not pIsZhengChan then
+		pIsZhengChan = true
+		for i=8, 1, -1 do -- 北西南东 北西南东
+			local j = i > 4 and (i - 4) or i
+			if pOutCardMap[i].iCardValue ~= 4*10 + i then
+				pIsZhengChan = false
+				break
+			end
+		end
+	end
+
+	return pIsZhengChan
+end
+
+--[[
+	四人连续出同样的牌，第一个出牌的付每人5花
+]]
+function GameRuleYNPEMJ:isFourOutSameCard(pBlockCardMap, pUser)
+	local pOutCardMap =  pUser:onGetOutCardMap()
+ 	local pCardValue = pOutCardMap[#pOutCardMap].iCardValue
+ 	local pTotalOutCard = pOutCardMap[#pOutCardMap].iRank
+ 	local pPerSeatId =  (pUser:onGetSeatId() - 1 ) > 0 and (pUser:onGetSeatId() - 1 ) or self.m_pGameRound:onGetGameTable():onGetGameTableMaxUserCount()
+ 	while (pPerSeatId ~= pUser:onGetSeatId()) do
+ 		local pTempUser = self.m_pGameRound.m_pGameUsers[pPerSeatId]
+ 		local pTempOutCardMap = pTempUser:onGetOutCardMap()
+ 		if #pTempOutCardMap == 0 then return false end
+
+ 		local pTempCardValue = pTempOutCardMap[#pTempOutCardMap].iCardValue
+ 		local pTempTotalOutCard = pTempOutCardMap[#pTempOutCardMap].iRank
+ 		if pCardValue ~= pTempCardValue or pTotalOutCard ~= (pTempTotalOutCard + 1) then
+ 			return false
+ 		end
+
+ 		pTotalOutCard = pTempTotalOutCard
+		pPerSeatId =  (pPerSeatId - 1 ) > 0 and (pPerSeatId - 1 ) or self.m_pGameRound:onGetGameTable():onGetGameTableMaxUserCount()
+ 	end
+ 	return true
+end
+
+--[[
+	一个人出四张同样的牌（不需要连续）付每人5花
+]]
+function GameRuleYNPEMJ:isOutFourSameCard(pBlockCardMap, pOutCardMap)
+	if #pOutCardMap == 0 then return false end
+ 
+ 	local pCardValue = pOutCardMap[#pOutCardMap].iCardValue
+ 	local pOutSameCardCount = 0
+
+ 	for k, v in pairs(pOutCardMap) do
+ 		if v.iCardValue == pCardValue then
+ 			pOutSameCardCount = pOutSameCardCount + 1
+ 		end
+ 	end
+
+ 	return pOutSameCardCount == 4
+end
+ 
+--[[
+	十六幺:连续打出19和风牌是十六张就行
+]]
+function GameRuleYNPEMJ:isShiLiuYao(pBlockCardMap, pOutCardMap)
+	local pOutCount = 0
+	for k, v in pairs(pOutCardMap) do
+		local kType, kValue = self:onGetCardTypeAndValue(v.iCardValue)
+		if kValue == 1 or kValue == 9 or kType  == 4 then
+			pOutCount = pOutCount + 1
+		end
+	end
+
+	return pOutCount > 15
+end
+
+function GameRuleYNPEMJ:isShiXiZhang(pUserId)
+ 	return #self.m_pGameRound.m_pUserBuHuaTable[pUserId] >= 14
+end 
+
+--[[
+	返回值为table{
+		{iOpValue = 1, iCardValue = 1,}，
+		...
+	}
+]]
+function GameRuleYNPEMJ:onGetOpTableWhenDrawCard(pUser, pCardValue)
+	local pHandCardMap = pUser:onGetHandCardMap()
+	local pBlockCardMap = pUser:onGetBlockCardMap()
+	local pHandCardCountTwoMap = self:onGetHandCardCountTwoMap(pHandCardMap)
+	local pAllGangCardTable = self:onGetAllGangTable(pHandCardCountTwoMap, pBlockCardMap)
+	
+	local opTable = {}
+
+	local pType, pValue = self:onGetCardTypeAndValue(pCardValue)
+	if pType > 4 then -- 如果抓到花牌必须补牌
+		local pDrawCardMap = pUser:onGetDrawCardMap()
+		local pCardCount = 0
+		if pType == 5 then
+			for k, v in ipairs(pDrawCardMap) do
+				if v == pCardValue then
+					pCardCount = pCardCount + 1
+				end
+			end
+		else
+			local pBeginValue = pValue < 5 and 1 or 5 -- 春夏秋冬 梅兰竹菊
+			local pEndValue = pBeginValue + 3
+			for i = pBeginValue, pEndValue do
+				for k, v in ipairs(pDrawCardMap) do
+					if v == (pType * 10 + i) then
+						pCardCount = pCardCount + 1
+					end
+				end
+			end
+		end
+
+		if pCardCount == 4 then
+			--TODO: 罚款 花杠：另外三家每家付10花
+			Log.d(TAG, "onGameCurrentSettlement 罚款 花杠 春夏秋冬 梅兰竹菊 10 ")
+			self:onGameCurrentSettlement(pUser, nil, self.m_pGameRound.m_pGameUsers, 10)
+		end
+
+		return opTable
+	end
+
+	for _, kGangCard in pairs(pAllGangCardTable) do
+		local op = {
+			iOpValue = kGangCard.iOpValue,
+			iCardValue = kGangCard.iCardValue,
+		}
+
+		opTable[#opTable + 1] = op
+	end
+
+	-- 胡牌
+	local pHuInfo = self:onGetHuTypeInfo(0, pUser, pHandCardCountTwoMap, pCardValue)
+	if pHuInfo then
+		local pIsGangShangKaiHua = false
+		local pTotalOutCard = self.m_pGameRound:onGetTotalOutCard()
+		for k, v in pairs(pBlockCardMap) do
+			if OperationType:isHasGang(v.iOpValue) and pTotalOutCard == v.iRank then
+				pIsGangShangKaiHua = true
+				break
+			end
+		end
+		pUser:onSetHuInfo(pHuInfo)
+		local op = {
+			iOpValue = pIsGangShangKaiHua and OperationType.GANGSHANGKAIHUA or OperationType.ZIMO,
+			iCardValue = pCardValue,
+		}
+		opTable[#opTable + 1] = op
+	end
+
+	if self:isShiXiZhang(pUser:onGetUserId()) then
+		opTable = {}
+
+		local pHuInfo = {}
+		pHuInfo.iFan = -1
+		pHuInfo.iName = "十四张"
+
+		pUser:onSetHuInfo(pHuInfo)
+
+		local op = {
+			iOpValue = OperationType.ZIMO,
+			iCardValue = pCardValue,
+		}
+		opTable[#opTable + 1] = op	
+
+		self.m_pIsCanZhengChan = true
+	end
+
+	if #opTable > 0 then
+		local op = {
+			iOpValue = OperationType.GUO,
+			iCardValue = pCardValue,
+		}
+		opTable[#opTable + 1] = op
+	end
+	-- Log.dump(TAG, opTable, "opTable")
+	return opTable
+end
+
+--[[
+	返回值为table{
+		{iOpValue = 1, iCardValue = 1,}，
+		...
+	}
+]]
+function GameRuleYNPEMJ:onGetOpTableWhenOutCard(pOutUser, pUser, pCardValue, pGameUsers)
+	local pHandCardMap = pUser:onGetHandCardMap()
+	local pBlockCardMap = pUser:onGetBlockCardMap()
+	local pHandCardCountTwoMap = self:onGetHandCardCountTwoMap(pHandCardMap, pCardValue)
+	local pAllGangCardTable = self:onGetAllGangTable(pHandCardCountTwoMap, pBlockCardMap, pCardValue)
+
+	local opTable = {}
+	-- 如果不是自己
+	if pOutUser ~= pUser then
+		-- 碰牌
+		if self:isCanPeng(pHandCardCountTwoMap, pCardValue) and self:isRealCanPeng(pUser, pGameUsers, pCardValue) then
+			local op = {
+				iOpValue = OperationType.PENG,
+				iCardValue = pCardValue,
+			}
+			opTable[#opTable + 1] = op
+		end
+		-- 杠牌
+		for _, kGangCard in pairs(pAllGangCardTable) do
+			local op = {
+				iOpValue = kGangCard.iOpValue,
+				iCardValue = kGangCard.iCardValue,
+			}
+			opTable[#opTable + 1] = op
+		end
+		-- 胡牌
+		local pHuInfo = self:onGetHuTypeInfo(1, pUser, pHandCardCountTwoMap, pCardValue)
+		-- 是不是杠上炮
+		local pIsGangShangPao = false
+		local pOutUserBlockCardMap = pOutUser:onGetBlockCardMap()
+		local pTotalOutCard = self.m_pGameRound:onGetTotalOutCard()
+		for k, v in pairs(pOutUserBlockCardMap) do
+			if OperationType:isHasGang(v.iOpValue) and v.iRank == pTotalOutCard - 1 then
+				pIsGangShangPao = true
+				break
+			end
+		end
+		if pHuInfo and (pHuInfo.iFan > 0 or pIsGangShangPao) and self:isRealCanHu(pUser) then 
+			pUser:onSetHuInfo(pHuInfo)
+			local op = {
+				iOpValue = pIsGangShangPao and OperationType.GANGSHANGPAO or OperationType.HU,
+				iCardValue = pCardValue,
+			}
+			opTable[#opTable + 1] = op
+		end
+	else
+		local pOutCardMap = pUser:onGetOutCardMap()
+		if self:isPlaytypeDongNanXiBeiFaKuan(self.m_pPlaytype) then			
+			if #pOutCardMap == 4 and self:isDongNanXiBeiFaKuan(pBlockCardMap, pOutCardMap) then
+				--TODO: 罚款
+				Log.d(TAG, "onGameCurrentSettlement isPlaytypeDongNanXiBeiFaKuan 5 ")
+				self:onGameCurrentSettlement(pUser, nil, self.m_pGameRound.m_pGameUsers, 5)
+			end
+		end
+
+		if self:isFourOutSameCard(pBlockCardMap, pUser) then
+			--TODO: 罚款
+			local pPerSeatId =  (pUser:onGetSeatId() - 1 ) > 0 and (pUser:onGetSeatId() - 1 ) or self.m_pGameRound:onGetGameTable():onGetGameTableMaxUserCount()
+			for i=1, 2 do
+				pPerSeatId =  (pPerSeatId - 1 ) > 0 and (pPerSeatId - 1 ) or self.m_pGameRound:onGetGameTable():onGetGameTableMaxUserCount()
+			end
+
+			Log.d(TAG, "onGameCurrentSettlement isFourOutSameCard -5 ")
+			self:onGameCurrentSettlement(self.m_pGameRound.m_pGameUsers[pPerSeatId], nil, self.m_pGameRound.m_pGameUsers, -5)
+		end
+
+		if self:isOutFourSameCard(pBlockCardMap, pOutCardMap) then
+			Log.d(TAG, "onGameCurrentSettlement isOutFourSameCard -5 ")
+			self:onGameCurrentSettlement(pUser, nil, self.m_pGameRound.m_pGameUsers, -5)
+		end
+
+		if self:isShiLiuYao(pBlockCardMap, pOutCardMap) then
+			local pHuInfo = {}
+			pHuInfo.iFan = -1
+			pHuInfo.iName = "十六幺"
+
+			pUser:onSetHuInfo(pHuInfo)
+
+			local op = {
+				iOpValue = OperationType.ZIMO,
+				iCardValue = pCardValue,
+			}
+			opTable[#opTable + 1] = op
+			self.m_pIsCanZhengChan = true			
+		end
+
+		if self:isDoubleDongNanXiBei(pBlockCardMap, pOutCardMap) then
+			local pHuInfo = {}
+			pHuInfo.iFan = -1
+			pHuInfo.iName = "两轮东南西北或两轮北西南东"
+
+			pUser:onSetHuInfo(pHuInfo)
+
+			local op = {
+				iOpValue = OperationType.ZIMO,
+				iCardValue = pCardValue,
+			}
+			opTable[#opTable + 1] = op		
+			self.m_pIsCanZhengChan = true
+		end
+	end
+	if #opTable > 0 then
+		local op = {
+			iOpValue = OperationType.GUO,
+			iCardValue = pCardValue,
+		}
+		opTable[#opTable + 1] = op
+	end
+
+	return opTable
+end
+
+function GameRuleYNPEMJ:onGetOpTableWhenOpCard(pOpUser, pUser, pOp)
+	local opTable = {}
+	-- 碰牌之后是否能杠
+	if OperationType:isPeng(pOp.iOpValue) and pOpUser == pUser then
+		local pHandCardMap = pUser:onGetHandCardMap()
+		local pBlockCardMap = pUser:onGetBlockCardMap()
+		local pHandCardCountTwoMap = self:onGetHandCardCountTwoMap(pHandCardMap)
+		local pAllGangCardTable = self:onGetAllGangTable(pHandCardCountTwoMap, pBlockCardMap)
+		for _, kGangCard in pairs(pAllGangCardTable) do
+			local op = {
+				iOpValue = kGangCard.iOpValue,
+				iCardValue = kGangCard.iCardValue,
+			}
+			opTable[#opTable + 1] = op
+		end
+	elseif OperationType:isBuGang(pOp.iOpValue) and pOpUser ~= pUser then
+		local pHandCardMap = pUser:onGetHandCardMap()
+		local pBlockCardMap = pUser:onGetBlockCardMap()
+		local pHandCardCountTwoMap = self:onGetHandCardCountTwoMap(pHandCardMap, pOp.iCardValue)
+		local pHuInfo = self:onGetHuTypeInfo(1, pUser, pHandCardCountTwoMap, pOp.iCardValue)
+		if pHuInfo and self:isRealCanHu(pUser) then
+			pUser:onSetHuInfo(pHuInfo)
+			local op = {
+				iOpValue = OperationType.QIANGGANGHU,
+				iCardValue = pOp.iCardValue,
+			}
+			opTable[#opTable + 1] = op
+		end
+	elseif OperationType:isGang(pOp.iOpValue) and pOpUser ~= pUser then
+		local pHandCardMap = pUser:onGetHandCardMap()
+		local pBlockCardMap = pUser:onGetBlockCardMap()
+		local pHandCardCountTwoMap = self:onGetHandCardCountTwoMap(pHandCardMap, pOp.iCardValue)
+		local pHuInfo = self:onGetHuTypeInfo(1, pUser, pHandCardCountTwoMap, pOp.iCardValue)
+		if pHuInfo and self:isRealCanHu(pUser) then
+			pUser:onSetHuInfo(pHuInfo)
+			local op = {
+				iOpValue = OperationType.QIANGGANGHU,
+				iCardValue = pOp.iCardValue,
+			}
+			opTable[#opTable + 1] = op
+		end
+	end
+	if #opTable > 0 then
+		local op = {
+			iOpValue = OperationType.GUO,
+			iCardValue = pOp.iCardValue,
+		}
+		opTable[#opTable + 1] = op
+	end
+	return opTable
+end
+
+--!
+--! @brief      获得当某一个玩家杠牌的信息
+--!
+--! @param      pUser       The user
+--! @param      tUser       The t user
+--! @param      pGameUsers  The game users
+--! @param      pOp         The operation
+--! @param      pBasePoint  The base point
+--!
+--! @return     金币流水
+--!
+function GameRuleYNPEMJ:onGetGangTableWhenUserGang(pUser, tUser, pGameUsers, pOp, pBasePoint)
+	-- 如果是直杠
+	if OperationType:isGang(pOp.iOpValue) then -- 明杠：出杠者付10花
+		Log.d(TAG, "onGameCurrentSettlement isGang 10 ")
+		self:onGameCurrentSettlement(pUser, tUser, nil, 10)
+	elseif OperationType:isAnGang(pOp.iOpValue) then
+		Log.d(TAG, "onGameCurrentSettlement isAnGang 5 ")
+		self:onGameCurrentSettlement(pUser, nil, pGameUsers, 5)
+	end
+	
+	return nil
+end
+
+--!
+--! @brief      Determines if game stop liu ju.
+--!
+--! @param      cardCount  The card count
+--!
+--! @return     True if game stop liu ju, False otherwise.
+--!
+function GameRuleYNPEMJ:isGameStopLiuJu(pSeatId , pCardCount)
+	if pCardCount <= 0 then
+		self.m_pGameRound.m_pPreRoundInfo.iLastSeatId = pSeatId
+		self.m_pIsBiXiaHu = true
+		return true
+	end
+	return false
+end
+
+--!
+--! @brief      将手牌转化成2维计数数组
+--!
+--! @param      pHandCardMap  The hand card map
+--!
+--! @return     pHandCardCountTwoMap  
+--!
+function GameRuleYNPEMJ:onGetHandCardCountTwoMap(pHandCardMap, pCardValue)
+	local pHandCardCountTwoMap = {}
+	for i = 1, 6 do -- 需要加上花牌
+		pHandCardCountTwoMap[i] = {}
+		for j = 1, 10 do
+			pHandCardCountTwoMap[i][j] = 0
+		end
+	end
+	for _, kCardValue in pairs(pHandCardMap) do
+		local kType, kValue = self:onGetCardTypeAndValue(kCardValue)
+		pHandCardCountTwoMap[kType][10] = pHandCardCountTwoMap[kType][10] + 1
+		pHandCardCountTwoMap[kType][kValue] = pHandCardCountTwoMap[kType][kValue] + 1
+	end
+	if pCardValue and pCardValue > 0 then
+		local pType, pValue = self:onGetCardTypeAndValue(pCardValue)
+		pHandCardCountTwoMap[pType][10] = pHandCardCountTwoMap[pType][10] + 1
+		pHandCardCountTwoMap[pType][pValue] = pHandCardCountTwoMap[pType][pValue] + 1
+	end
+	return pHandCardCountTwoMap
+end
+
+--!
+--! @brief      Determines if can peng.
+--!
+--! @param      pHandCardMap  The hand card map
+--! @param      pCardValue    The card value
+--!
+--! @return     True if can peng, False otherwise.
+--!
+function GameRuleYNPEMJ:isCanPeng(pHandCardCountTwoMap, pCardValue)
+	local pType, pValue = self:onGetCardTypeAndValue(pCardValue)
+	return pHandCardCountTwoMap[pType][pValue] >= 3 
+end
+
+function GameRuleYNPEMJ:onGetCanTingCardTable(pHandCardCountTwoMap, pBlockCardMap)
+	local pMahjongOneCardTable = {}
+	local onAddOneCard = function(pMahjongOneCardTable, pValue)
+		for _, kCardValue in pairs(pMahjongOneCardTable) do
+			if kCardValue == pValue then
+				return
+			end
+		end
+		table.insert(pMahjongOneCardTable, pValue)
+	end
+
+	-- 加上和手牌有关的牌
+	for i = 1, 5 do
+		for j = 1, 9 do
+			if pHandCardCountTwoMap[i][j] > 0 then
+				onAddOneCard(pMahjongOneCardTable, i * 10 + j)
+				if i <= 3 and j - 1 >= 1 then
+					onAddOneCard(pMahjongOneCardTable, i * 10 + j - 1)
+				end
+				if i <= 3 and j + 1 <= 9 then
+					onAddOneCard(pMahjongOneCardTable, i * 10 + j + 1)
+				end
+			end
+		end
+	end
+	return pMahjongOneCardTable
+end
+
+function GameRuleYNPEMJ:onGetHandOneCardMap(pHandCardMap)
+	local pHandOneCardMap = {}
+	for i = 1, #pHandCardMap do
+		local pIsHas = false
+		for j = 1, #pHandOneCardMap do
+			if pHandCardMap[i] == pHandOneCardMap[j] then
+				pIsHas = true
+				break
+			end
+		end
+		if not pIsHas then
+			pHandOneCardMap[#pHandOneCardMap + 1] = pHandCardMap[i]
+		end
+	end
+	return pHandOneCardMap
+end
+
+function GameRuleYNPEMJ:onGetTingCardTable(pUser)
+	local pStartTime = os.clock()
+	local pAllCardTingInfoTable = {}
+	local pHandCardMap = pUser:onGetHandCardMap()
+	local pBlockCardMap = pUser:onGetBlockCardMap()
+	-- 有多少张手牌
+	local pHandOneCardMap = self:onGetHandOneCardMap(pHandCardMap)
+	-- Log.dump(TAG, pBlockCardMap, "pBlockCardMap")
+	for index, _ in pairs(pHandOneCardMap) do
+		local pCardValue = pHandOneCardMap[index]
+		local pOneCardTingInfoTable = self:onGetOneTingCardTable(pUser, pHandCardMap, pBlockCardMap, pCardValue)
+		
+		if #pOneCardTingInfoTable > 0 then
+			pAllCardTingInfoTable[#pAllCardTingInfoTable + 1] = {
+				iTingCardValue = pCardValue,
+				iTingCardInfoTable = pOneCardTingInfoTable
+			}
+		end
+	end
+	-- Log.dump(TAG, pAllCardTingInfoTable, "pAllCardTingInfoTable")
+	local pCostTime = (os.clock() - pStartTime) * 1000
+	-- Log.e(TAG, "GameRuleYNPEMJ after4 onGetTingCardTable1111111111 time[%s]", pCostTime)
+	return pAllCardTingInfoTable
+end
+
+function GameRuleYNPEMJ:onGetOneTingCardTable(pUser, pHandCardMap, pBlockCardMap, pCardValue)
+	local pOneCardTingInfoTable = {}
+	local pMahjongOneCardTable = self:onGetCanTingCardTable(self:onGetHandCardCountTwoMap(pHandCardMap), pBlockCardMap)
+	for i = 1, #pMahjongOneCardTable do
+		local tCardValue = pMahjongOneCardTable[i]
+		local pHandCardCountTwoMap = self:onGetHandCardCountTwoMap(pHandCardMap)
+		local tType, tValue = self:onGetCardTypeAndValue(tCardValue)
+		pHandCardCountTwoMap[tType][tValue] = pHandCardCountTwoMap[tType][tValue] + 1
+		pHandCardCountTwoMap[tType][10] = pHandCardCountTwoMap[tType][10] + 1
+		if pCardValue and pCardValue > 0 then
+			local pType, pValue = self:onGetCardTypeAndValue(pCardValue)
+			pHandCardCountTwoMap[pType][pValue] = pHandCardCountTwoMap[pType][pValue] - 1
+			pHandCardCountTwoMap[pType][10] = pHandCardCountTwoMap[pType][10] - 1
+		end
+		-- 如果能听牌，则开始计算最大番型
+		local pHuInfo = self:onGetHuTypeInfo(2, pUser, pHandCardCountTwoMap, pCardValue)
+		if pHuInfo then
+			pHuInfo.iCardValue = tCardValue
+			pHuInfo.iCardCount = self.m_pGameRound:onGetRemainCardNum(pUser:onGetUserId(), tCardValue)
+			pHuInfo.iNeed = ""  -- 是否需要自摸
+			pOneCardTingInfoTable[#pOneCardTingInfoTable + 1] = pHuInfo
+		end
+	end
+	return pOneCardTingInfoTable
+end
+
+function GameRuleYNPEMJ:isNormalHu(pHandCardCountTwoMap, pHasJiang)
+	local pCloneHandCardCountTwoMap = clone(pHandCardCountTwoMap)
+	return self:onComplet(pCloneHandCardCountTwoMap, pHasJiang)
+end
+
+--!
+--! @brief      获得当某一个玩家胡牌的信息
+--!
+--! @param      pUser        胡牌玩家
+--! @param      tUser        放炮玩家
+--! @param      pGameUsers   所有玩家
+--! @param      op           The operation
+--!
+--! @return     返回胡牌信息
+--!
+function GameRuleYNPEMJ:onGetHuTableWhenUserHu(pUser, tUser, pGameUsers, op, pBasePoint, pIsBattle)
+	local pRet = {}
+	local pHuCard = op.iCardValue
+	local pHandCardMap = pUser:onGetHandCardMap()
+	local pBlockCardMap = pUser:onGetBlockCardMap()
+	local pOutCardMap = pUser:onGetOutCardMap()
+	local pHandCardCountTwoMap = self:onGetHandCardCountTwoMap(pHandCardMap) 
+	local pGangCardTable = self:onGetAllGangTable(pHandCardCountTwoMap, pBlockCardMap)
+	
+	local pHuInfo = pUser:onGetHuInfo()
+	if pHuInfo then
+		-- 处理其他的番型
+		if not self.m_pIsCanZhengChan then --如果不是整铲除
+			local pAddToFanTable = self:onDealAddToFanWhenHasHu(pUser, pGameUsers, op, pUser == tUser)
+			pHuInfo.iFan = pHuInfo.iFan + pAddToFanTable.iFan
+			pHuInfo.iName = string.format("%s %s", pHuInfo.iName, pAddToFanTable.iName)
+
+			local pAddToHuaTable = self:onDealAddToHuaWhenHasHu(pUser, pHuCard)
+			pHuInfo.iFan = pHuInfo.iFan + pAddToHuaTable.iFan
+			pHuInfo.iName = string.format("%s %s", pHuInfo.iName, pAddToHuaTable.iName)
+		end
+		
+		-- 设置手牌和操作牌
+		if not pHuInfo.iHuCard then
+			pHuInfo.iHuCard = pHuCard
+		end
+
+		local pHuType = pUser == tUser and DefineType.MAHJONG_HUTYPE_ZIMO or DefineType.MAHJONG_HUTYPE_PAOHU
+		pRet = {
+			iUserId = pUser:onGetUserId(),
+			iTUserId = tUser:onGetUserId(),
+			iFan = pHuInfo.iFan,
+			iName = pHuInfo.iName,
+			iHuType = pHuType,
+			iHuCard = pHuInfo.iHuCard,
+			iTurnMoneyTable = {},
+		}
+	end
+
+	local pBei = pRet.iFan and  pRet.iFan or 0
+
+	if pUser:onGetSeatId() == self.m_pGameRound.m_pBankerSeatId or pIsBattle or pBei > 0 then -- 比下胡 庄家胡牌 一炮多响 大胡 杠开花
+		self.m_pIsBiXiaHu = true
+	end
+	
+	self:onGetHuSettlement(pRet, pUser, tUser, pGameUsers, pOp, pBei)
+
+	-- 统计玩家的数据
+	if pIsBattle then
+		local pUserExtend = self.m_pUserExtendTable[pUser:onGetUserId()]
+		-- Log.dump(TAG, pUserExtend, "pUserExtend")
+		for k, v in pairs(pBlockCardMap) do
+			if OperationType:isHasGang(v.iOpValue) then
+				pUserExtend.iGangCount = pUserExtend.iGangCount + 1
+			end
+		end
+		if pUserExtend.iMaxFan < pRet.iFan then
+			pUserExtend.iMaxFan = pRet.iFan
+		end
+		if pUser == tUser then
+			pUserExtend.iZiMoCount = pUserExtend.iZiMoCount + 1
+		else
+			local tUserExtend = self.m_pUserExtendTable[tUser:onGetUserId()]
+			tUserExtend.iFangPaoCount = tUserExtend.iFangPaoCount + 1
+			pUserExtend.iJiePaoCount = pUserExtend.iJiePaoCount + 1
+		end
+	end
+	-- 设置上局的信息,用来定庄
+	self.m_pGameRound.m_pPreRoundInfo.iHuSeatId = pUser:onGetSeatId()
+	-- Log.dump(TAG, pRet ,"pRet")
+	return pRet
+end
+
+function GameRuleYNPEMJ:onGetHuSettlement(pRet, pUser, tUser, pGameUsers, pOp, pBei)
+	--是否内包
+	--内包在桌面设置的100分内结算
+	local pSongGangZheUserId = self:onGetSongGangZheUserId(pUser, tUser, pGameUsers, pOp)
+	local pQingYiSeWaiBao, pQingYiSeWaiBaoUserId = self:isQingYiSeWaiBao(pUser, tUser, pOp)
+
+	if pOp and OperationType:isQiangGangHu(pOp.iOpValue) then -- 抢杠胡算自摸，由杠牌人付三倍，并且杠牌人不能收杠钱
+		pRet.iTurnMoneyTable[tUser:onGetUserId()] = -pBei * 3
+		pRet.iTurnMoneyTable[pUser:onGetUserId()] = pRet.iTurnMoneyTable[pUser:onGetUserId()] or 0
+		pRet.iTurnMoneyTable[pUser:onGetUserId()] = pRet.iTurnMoneyTable[pUser:onGetUserId()] + pBei * 3		
+
+	elseif pSongGangZheUserId > 0 then -- 大杠开花：杠开者算自摸，全部由送杠者一家付三倍
+		pRet.iTurnMoneyTable[pSongGangZheUserId] = -pBei * 3
+		pRet.iTurnMoneyTable[pUser:onGetUserId()] = pRet.iTurnMoneyTable[pUser:onGetUserId()] or 0
+		pRet.iTurnMoneyTable[pUser:onGetUserId()] = pRet.iTurnMoneyTable[pUser:onGetUserId()] + pBei * 3	
+
+	elseif self:isQuanQiuDuDiaoJiaPai(pUser, tUser) then --全球独钓架牌
+			local pValue = 50 
+			if self.m_pGameRound.m_pPreRoundInfo.iBiXiaHu then
+				pValue = pValue * 2
+			end
+
+			self.m_pUserExtendTable[tUser:onGetUserId()].iWaiBao = self.m_pUserExtendTable[tUser:onGetUserId()].iWaiBao + (-pValue)
+			self.m_pUserExtendTable[pUser:onGetUserId()].iWaiBao = self.m_pUserExtendTable[pUser:onGetUserId()].iWaiBao + pValue
+
+			pRet.iName = "外包"
+			pRet.iFan = pValue
+			-- pRet.iTurnMoneyTable[tUser:onGetUserId()] = -pValue
+			-- pRet.iTurnMoneyTable[pUser:onGetUserId()] = pRet.iTurnMoneyTable[pUser:onGetUserId()] or 0
+			-- pRet.iTurnMoneyTable[pUser:onGetUserId()] = pRet.iTurnMoneyTable[pUser:onGetUserId()] + pValue
+	elseif pQingYiSeWaiBao then --清一色外包
+			local pValue = 50 
+			if self.m_pGameRound.m_pPreRoundInfo.iBiXiaHu then
+				pValue = pValue * 2
+			end
+
+			self.m_pUserExtendTable[pQingYiSeWaiBaoUserId].iWaiBao = self.m_pUserExtendTable[pQingYiSeWaiBaoUserId].iWaiBao + (-pValue)
+			self.m_pUserExtendTable[pUser:onGetUserId()].iWaiBao = self.m_pUserExtendTable[pUser:onGetUserId()].iWaiBao + pValue
+
+			pRet.iName = "外包"
+			pRet.iFan = pValue
+			-- pRet.iTurnMoneyTable[pQingYiSeWaiBaoUserId] = -pValue
+			-- pRet.iTurnMoneyTable[pUser:onGetUserId()] = pRet.iTurnMoneyTable[pUser:onGetUserId()] or 0
+			-- pRet.iTurnMoneyTable[pUser:onGetUserId()] = pRet.iTurnMoneyTable[pUser:onGetUserId()] + pValue		
+	else
+		if pUser == tUser then 
+			for p, q in pairs(pGameUsers) do
+				if pUser ~= q and q:onGetIsHu() <= 0 then
+					pRet.iTurnMoneyTable[q:onGetUserId()] = -pBei
+					pRet.iTurnMoneyTable[pUser:onGetUserId()] = pRet.iTurnMoneyTable[pUser:onGetUserId()] or 0
+					pRet.iTurnMoneyTable[pUser:onGetUserId()] = pRet.iTurnMoneyTable[pUser:onGetUserId()] + pBei
+				end
+			end
+		else
+			pRet.iTurnMoneyTable[tUser:onGetUserId()] = -pBei
+			pRet.iTurnMoneyTable[pUser:onGetUserId()] = pRet.iTurnMoneyTable[pUser:onGetUserId()] or 0
+			pRet.iTurnMoneyTable[pUser:onGetUserId()] = pRet.iTurnMoneyTable[pUser:onGetUserId()] + pBei
+		end
+	end
+end
+
+function GameRuleYNPEMJ:onGetSongGangZheUserId(pUser, tUser, pGameUsers, pOp)
+	if not pOp or not OperationType:isGangShangKaiHua(pOp.iOpValue) then return 0 end
+
+	local pBlockCardMap = pUser:onGetBlockCardMap()
+	local pOpTable = pBlockCardMap[#pBlockCardMap]
+	if OperationType.isGang(pOpTable.iOpValue) then --补杠 前面出牌让我杠的为送杠者
+		for k, v in pairs(pGameUsers) do
+			if v:onGetUserId() ~= pUser:onGetUserId() then
+				local pOutCardMap = v:onGetOutCardMap()
+				for k, v in pairs(pOutCardMap) do
+					if v.iRank + 1 == pOpTable.iRank then
+						return v:onGetUserId()
+					end
+				end
+			end
+		end
+	end
+
+	if OperationType.isBuGang(pOpTable.iOpValue) then -- 补杠 前面出牌让我碰的为送杠者
+		for k, v in pairs(pGameUsers) do
+			if v:onGetUserId() ~= pUser:onGetUserId() then
+				local pOutCardMap = v:onGetOutCardMap()
+				for k, v in pairs(pOutCardMap) do
+					if v.iCardValue == pOpTable.iCardValue then
+						return v:onGetUserId()
+					end
+				end
+			end
+		end
+	end
+
+	return 0
+end
+
+function GameRuleYNPEMJ:isQuanQiuDuDiaoJiaPai(pUser, tUser)
+	if pUser == tUser then return false end
+
+	local pHandCardMap = pUser:onGetHandCardMap()
+	local pBlockCardMap = pUser:onGetBlockCardMap()
+	local pHandCardCountTwoMap = self:onGetHandCardCountTwoMap(pHandCardMap)
+	if self:isQuanQiuDuDiao(pHandCardCountTwoMap, pBlockCardMap) then 
+		local pCardValue = pHandCardMap[#pHandCardMap]
+		local pOpTable = pBlockCardMap[#pBlockCardMap]
+		local pOutCardMap = v:onGetOutCardMap()
+
+		local pOutCardValue = 0
+		for k, v in pairs(pOutCardMap) do
+			if v.iRank == pOpTable.iRank + 1 then
+				pOutCardValue = v.iCardValue
+				break
+			end
+		end
+
+		if pOutCardValue <= 0 then return false end
+		local pType, pValue = self:onGetCardTypeAndValue(pCardValue)
+		local pOutType, pOutValue = self:onGetCardTypeAndValue(pOutCardValue)
+		if pType ~= pOutType then
+			return false
+		end
+
+		if pValue  <= pOutValue + 2 or pValue >= pOutValue - 2 then
+			return true
+		end
+	end
+
+	return false
+end
+
+function GameRuleYNPEMJ:isSanDaSiBao(pUser) -- 三打四包
+	local pBlockCardMap = pUser:onGetBlockCardMap()
+	local pTustUserId = 0
+	local pPengCount = 0
+	local pSameUserPengCount = 0 
+	for k, v in pairs(pBlockCardMap) do
+		if OperationType:isPeng(v.iOpValue) then
+			if pTustUserId == 0 or pTustUserId == v.iTUserId then
+				pSameUserPengCount = pSameUserPengCount + 1
+				pTustUserId = v.iTUserId
+			else
+				break
+			end
+
+			pPengCount = pPengCount + 1
+		end
+	end
+
+	if pSameUserPengCount < 3 and pPengCount ~= 4 then
+		return false
+	end
+
+	return true
+end
+
+function GameRuleYNPEMJ:isQingYiSePengSanDu(pBlockCardMap)
+	local pPengCount = 0
+	local pSameUserPengCount = {}
+	if #pBlockCardMap < 4 then return false end
+
+	for i=1, #pBlockCardMap -1 do
+		if OperationType:isPeng(pBlockCardMap[i].iOpValue) then
+			pSameUserPengCount[pBlockCardMap[i].iTUserId] = pSameUserPengCount[pBlockCardMap[i].iTUserId] and pSameUserPengCount[pBlockCardMap[i].iTUserId] + 1 or 1
+		end
+	end
+
+	for k, v in pairs(pSameUserPengCount) do
+		if v > 1 then
+			return false
+		end
+
+		pPengCount = pPengCount + 1
+	end
+
+	if pPengCount ~= 3 then
+		return false
+	end
+
+	local pOpTable = pBlockCardMap[#pBlockCardMap]
+	if OperationType:isPeng(pOpTable.iOpValue) or OperationType.isGang(pOpTable.iOpValue) or OperationType.isAnGang(pOpTable.iOpValue) then
+		return true, pOpTable.iTUserId
+	end
+
+	return false
+end
+
+function GameRuleYNPEMJ:isQingYiSePengSanDuFangPao(pUser, tUser, pBlockCardMap, pOp)
+	local pPengCount = 0
+	local pSameUserPengCount = {}
+	if pUser == tUser then return false end
+	if #pBlockCardMap < 3 then return false end
+
+	for i=1, #pBlockCardMap -1 do
+		if OperationType:isPeng(pBlockCardMap[i].iOpValue) then
+			pSameUserPengCount[pBlockCardMap[i].iTUserId] = pSameUserPengCount[pBlockCardMap[i].iTUserId] and pSameUserPengCount[pBlockCardMap[i].iTUserId] + 1 or 1
+		end
+	end
+
+	for k, v in pairs(pSameUserPengCount) do
+		if v > 1 then
+			return false
+		end
+
+		pPengCount = pPengCount + 1
+	end
+
+	if pPengCount ~= 3 then
+		return false
+	end
+
+	return true, tUser:onGetUserId()
+end
+
+function GameRuleYNPEMJ:isQingYiSePengSameSanDuFangPao(pUser, tUser, pBlockCardMap)
+	if pUser == tUser then return false end
+	if #pBlockCardMap < 3 then return false end
+	local pTustUserId = 0
+	local pSameUserPengCount = 0 
+	for k, v in pairs(pBlockCardMap) do
+		if OperationType:isPeng(v.iOpValue) and pSameUserPengCount < 3 then
+			if pTustUserId == 0 or pTustUserId == v.iTUserId then
+				pSameUserPengCount = pSameUserPengCount + 1
+				pTustUserId = v.iTUserId
+			else
+				pSameUserPengCount = 1
+				pTustUserId = v.iTUserId
+			end
+		end
+	end
+
+	if pSameUserPengCount < 3 then
+		return false
+	end
+
+	return true, pTustUserId
+end
+
+function GameRuleYNPEMJ:isQingYiSeWaiBao(pUser, tUser, pOp) --清一色外包
+	local pHandCardMap = pUser:onGetHandCardMap()
+	local pBlockCardMap = pUser:onGetBlockCardMap()
+	local pHandCardCountTwoMap = self:onGetHandCardCountTwoMap(pHandCardMap)
+	if self:isQingYiSe(pHandCardCountTwoMap, pBlockCardMap) then
+		local pFlag, pUserId = self:isQingYiSePengSanDu(pBlockCardMap)
+		if pFlag then
+			return pFlag, pUserId
+		end
+
+		pFlag, pUserId = self:isQingYiSePengSanDuFangPao(pUser, tUser, pBlockCardMap, pOp)
+		if pFlag then
+			return pFlag, pUserId
+		end
+
+		pFlag, pUserId = self:isQingYiSePengSameSanDuFangPao(pUser, tUser, pBlockCardMap)
+		if pFlag then
+			return pFlag, pUserId
+		end	
+	end
+
+	return false
+end
+
+
+function GameRuleYNPEMJ:onGetNeedBuHua(pUser, pCardValue)
+	local tType, tValue = self:onGetCardTypeAndValue(pCardValue)
+	return tType > 4 
+end
+
+--------------------------- 内部函数 ---------------------
+function GameRuleYNPEMJ:onGetGameSettingConfig()
+	if not self.m_pPlaytypeConfig or not self.m_pPlaytypeConfig.iGameSettingTable then return {} end
+	local iGameSettingTable = self.m_pPlaytypeConfig.iGameSettingTable
+	local pBigType = string.format("0x%04x", self.m_pLocalGameType & 0xFF00)
+	local pSmallType = string.format("0x%02x", self.m_pLocalGameType & 0x00FF)
+	if iGameSettingTable[pBigType] == nil then return {} end
+	return iGameSettingTable[pBigType][pSmallType] or {}
+end
+
+--是否屏蔽表情
+function GameRuleYNPEMJ:isGameSettingEmoji()
+	local iGameSettingConfig = self:onGetGameSettingConfig()
+	if iGameSettingConfig.GAME_SETTING_EMOJI == nil then return end
+	local iValue = iGameSettingConfig.GAME_SETTING_EMOJI.iValue
+	local iGameSetting = self.m_pExtendTable.iGameSetting or 0
+	return (iGameSetting & iValue) == iValue
+end
+
+--[[
+	获取当前地区玩法下的玩法配置表
+]]
+function GameRuleYNPEMJ:onGetLocalGamePlaytypeTable()
+	local pBigType = string.format("0x%04x", self.m_pLocalGameType & 0xFF00)
+	local pSmallType = string.format("0x%02x", self.m_pLocalGameType & 0x00FF)
+	return self.m_pPlaytypeConfig.iGamePlaytypeTable[pBigType][pSmallType] or {}
+end
+
+--[[
+	把数(接庄比)
+]]
+function GameRuleYNPEMJ:isPlaytypeBaShu(playtype)
+	local playtypeTable = self:onGetLocalGamePlaytypeTable()
+	local value = playtypeTable.MAHJONG_PLAYTYPE_BASHU.iValue
+	return value == (playtype & value)
+end
+
+--[[
+	圈数(占庄比)
+]]
+function GameRuleYNPEMJ:isPlaytypeQuanShu(playtype)
+	local playtypeTable = self:onGetLocalGamePlaytypeTable()
+	local value = playtypeTable.MAHJONG_PLAYTYPE_QUANSHU.iValue
+	return value == (playtype & value)
+end
+
+--[[
+	花砸2
+]]
+function GameRuleYNPEMJ:isPlaytypeHuaZaer(playtype)
+	local playtypeTable = self:onGetLocalGamePlaytypeTable()
+	local value = playtypeTable.MAHJONG_PLAYTYPE_HUAZAER.iValue
+	return value == (playtype & value)
+end
+
+--[[
+	东南西北罚款
+]]
+function GameRuleYNPEMJ:isPlaytypeDongNanXiBeiFaKuan(playtype)
+	local playtypeTable = self:onGetLocalGamePlaytypeTable()
+	local value = playtypeTable.MAHJONG_PLAYTYPE_DONGNANXIBEIFAKUAN.iValue
+	return value == (playtype & value)
+end
+
+--!
+--! @brief      Determines if ping hu.
+--!
+--! @param      pHandCardCountTwoMap  The hand card count map
+--! @param      pBlockCardMap      The block card map
+--!
+--! @return     True if ping hu, False otherwise.
+--!
+function GameRuleYNPEMJ:isPingHu(pHandCardCountTwoMap, pBlockCardMap)
+	local pCloneHandCardCountMap = clone(pHandCardCountTwoMap)
+	if self:isNormalHu(pCloneHandCardCountMap) then
+		local pRet = {
+			iHandCardCountMap = pHandCardCountTwoMap,
+			iBlockCardMap = pBlockCardMap,
+		}
+		return pRet
+	end
+end
+
+function GameRuleYNPEMJ:onDealAddToFanWhenQiXiaoDui(pHandCardCountTwoMap, pBlockCardMap)
+	local pAddToFanTable = {
+		iName = "",
+		iFan = 0,
+	}
+	-- 判断是不是三龙七对
+	if self:isSanLongQiDui(pHandCardCountTwoMap, pBlockCardMap) then
+		pAddToFanTable.iName = string.format("%s%s ", pAddToFanTable.iName, "超超豪华七对")
+		pAddToFanTable.iFan = pAddToFanTable.iFan + 160
+	elseif self:isShuangLongQiDui(pHandCardCountTwoMap, pBlockCardMap) then
+		pAddToFanTable.iName = string.format("%s%s ", pAddToFanTable.iName, "超豪华七对")
+		pAddToFanTable.iFan = pAddToFanTable.iFan + 120
+	elseif self:isLongQiDui(pHandCardCountTwoMap, pBlockCardMap) then
+		pAddToFanTable.iName = string.format("%s%s ", pAddToFanTable.iName, "豪华七对")
+		pAddToFanTable.iFan = pAddToFanTable.iFan + 80
+	else
+		pAddToFanTable.iName = string.format("%s%s ", pAddToFanTable.iName, "七对")
+		pAddToFanTable.iFan = pAddToFanTable.iFan + 30
+	end
+	-- 判断是不是清一色
+	if self:isQingYiSe(pHandCardCountTwoMap, pBlockCardMap) then
+		pAddToFanTable.iName = string.format("%s%s ", pAddToFanTable.iName, "清一色")
+		pAddToFanTable.iFan = pAddToFanTable.iFan + 30
+	end
+
+	return pAddToFanTable
+end
+
+function GameRuleYNPEMJ:onDealAddToFanWhenPingHu(pHandCardCountTwoMap, pBlockCardMap)
+	local pAddToFanTable = {
+		iName = "",
+		iFan = 0,
+	}
+	-- 判断是不是对对胡
+	if self:isDuiDuiHu(pHandCardCountTwoMap, pBlockCardMap) then
+		pAddToFanTable.iName = string.format("%s%s ", pAddToFanTable.iName, "对对胡")
+		pAddToFanTable.iFan = pAddToFanTable.iFan + 20
+	end
+	-- 判断是不是清一色
+	if self:isQingYiSe(pHandCardCountTwoMap, pBlockCardMap) then
+		pAddToFanTable.iName = string.format("%s%s ", pAddToFanTable.iName, "清一色")
+		pAddToFanTable.iFan = pAddToFanTable.iFan + 30
+	end
+
+	if self:isHunYiSe(pHandCardCountTwoMap, pBlockCardMap) then
+		pAddToFanTable.iName = string.format("%s%s ", pAddToFanTable.iName, "混一色")
+		pAddToFanTable.iFan = pAddToFanTable.iFan + 20
+	end
+
+	if self:isQuanQiuDuDiao(pHandCardCountTwoMap, pBlockCardMap) then
+		pAddToFanTable.iName = string.format("%s%s ", pAddToFanTable.iName, "全求独钓")
+		pAddToFanTable.iFan = pAddToFanTable.iFan + 30
+	end
+
+	return pAddToFanTable
+end
+
+
+function GameRuleYNPEMJ:onDealAddToFanWhenHasHu(pUser, pGameUsers, pOp, pIsDraw)
+	local pAddToFanTable = {
+		iName = "",
+		iFan = 0,
+	}
+
+	if pIsDraw then
+		if self:isXiaoGangKaiHua(pUser) then
+			pAddToFanTable.iName = string.format("%s %s", pAddToFanTable.iName, "小杠开花")
+			pAddToFanTable.iFan = pAddToFanTable.iFan + 10
+		elseif self:isDaGangKaiHua(pUser) then
+			pAddToFanTable.iName = string.format("%s %s", pAddToFanTable.iName, "大杠开花")
+			pAddToFanTable.iFan = pAddToFanTable.iFan + 20
+		else
+			pAddToFanTable.iName = string.format("%s %s", pAddToFanTable.iName, "自摸")
+			pAddToFanTable.iFan = pAddToFanTable.iFan + 0
+		end
+	end
+
+	if pOp and OperationType:isQiangGangHu(pOp.iOpValue) then
+		pAddToFanTable.iName = string.format("%s %s", pAddToFanTable.iName, "抢杠胡")
+		pAddToFanTable.iFan = pAddToFanTable.iFan + 0
+	end
+	if pOp and OperationType:isGangShangKaiHua(pOp.iOpValue) then
+		pAddToFanTable.iName = string.format("%s %s", pAddToFanTable.iName, "大杠开花")
+		pAddToFanTable.iFan = pAddToFanTable.iFan + 20
+	end
+	if pOp and OperationType:isGangShangPao(pOp.iOpValue) then
+		pAddToFanTable.iName = string.format("%s %s", pAddToFanTable.iName, "杠上炮")
+		pAddToFanTable.iFan = pAddToFanTable.iFan + 0
+		pAddToFanTable.iIsGangShangPao = true
+	end
+	-- 判断是不是天胡，地胡
+	if self:isTianHu(pUser, pGameUsers) then
+		pAddToFanTable.iName = string.format("%s %s", pAddToFanTable.iName, "天胡")
+		pAddToFanTable.iFan = pAddToFanTable.iFan + 300 -- 三家干
+	elseif self:isDiHu(pUser, pGameUsers) then
+		pAddToFanTable.iName = string.format("%s %s", pAddToFanTable.iName, "地胡")
+		pAddToFanTable.iFan = pAddToFanTable.iFan + 30
+	end
+
+	return pAddToFanTable
+end
+
+--!
+--! @brief      Determines if Xiao Gang Kai Hua.
+--!
+--! @param      pHandCardCountTwoMap  The hand card count map
+--! @param      pBlockCardMap      The block card map
+--!
+--! @return     True if Xiao Gang Kai Hua, False otherwise.
+--!
+function GameRuleYNPEMJ:isXiaoGangKaiHua(pUser)
+	local pDrawCardMap = pUser:onGetDrawCardMap()
+	local pPerCardValue = pDrawCardMap[#pDrawCardMap]
+	local pCardType, _ = self:onGetCardTypeAndValue(pPerCardValue)
+	if pCardType == 6 then
+		return true
+	else
+		local pCardCount = 0
+		if pCardType == 5 then
+			for i,v in ipairs(pDrawCardMap) do
+				if v == pPerCardValue then
+					pCardCount = pCardCount + 1
+				end
+			end
+		end
+
+		return pCardCount < 4
+	end
+end
+
+--!
+--! @brief      Determines if Da Gang Kai Hua.
+--!
+--! @param      pHandCardCountTwoMap  The hand card count map
+--! @param      pBlockCardMap      The block card map
+--!
+--! @return     True if Da Gang Kai Hua, False otherwise.
+--!
+function GameRuleYNPEMJ:isDaGangKaiHua(pUser)
+	local pDrawCardMap = pUser:onGetDrawCardMap()
+	local pPerCardValue = pDrawCardMap[#pDrawCardMap]
+	local pType, pValue = self:onGetCardTypeAndValue(pPerCardValue)
+
+	local pCardCount = 0
+	if pType == 5 then
+		for i,v in ipairs(pDrawCardMap) do
+			if v == pPerCardValue then
+				pCardCount = pCardCount + 1
+			end
+		end
+	elseif pType == 6 then
+		local pBeginValue = pValue < 5 and 1 or 5 -- 春夏秋冬 梅兰竹菊
+		local pEndValue = pBeginValue + 3
+		for i = pBeginValue, pEndValue do
+			for k, v in ipairs(pDrawCardMap) do
+				if v == (pType * 10 + i) then
+					pCardCount = pCardCount + 1
+				end
+			end
+		end
+	end
+
+	return pCardCount == 4
+end	
+
+--!
+--! @brief      Determines if qing yi se.
+--!
+--! @param      pHandCardCountTwoMap  The hand card count map
+--! @param      pBlockCardMap      The block card map
+--!
+--! @return     True if qing yi se, False otherwise.
+--!
+function GameRuleYNPEMJ:isQingYiSe(pHandCardCountTwoMap, pBlockCardMap)
+	local pHuaSeTable = {}
+	for k, v in pairs(pBlockCardMap) do
+		local kType, kValue = self:onGetCardTypeAndValue(v.iCardValue)
+		pHuaSeTable[kType] = true
+	end
+	for i = 1, 5 do
+		pHuaSeTable[i] = pHuaSeTable[i] or pHandCardCountTwoMap[i][10] > 0 
+	end
+	local pHuaSeCount = 0
+	for i = 1, 3 do
+		pHuaSeCount = pHuaSeCount + (pHuaSeTable[i] and 1 or 0)
+	end
+	if pHuaSeTable[4] or pHuaSeTable[5] then
+		pHuaSeCount = pHuaSeCount + 1
+	end
+	return pHuaSeCount <= 1
+end
+
+
+--!
+--! @brief      Determines if dui dui hu.
+--!
+--! @param      pHandCardCountTwoMap  The hand card count map
+--! @param      pBlockCardMap      The block card map
+--!
+--! @return     True if dui dui hu, False otherwise.
+--!
+function GameRuleYNPEMJ:isDuiDuiHu(pHandCardCountTwoMap, pBlockCardMap)
+	for k, v in pairs(pBlockCardMap) do
+		if not OperationType:isPeng(v.iOpValue) and not OperationType:isHasGang(v.iOpValue) then
+			return
+		end
+	end
+	local pJiangCount = 0
+	for i = 1, 4 do -- 中发白是花牌
+		for j = 1, 9 do
+			if 2 == pHandCardCountTwoMap[i][j] or pHandCardCountTwoMap[i][j] == 5 then
+				pJiangCount = pJiangCount + 1
+			elseif pHandCardCountTwoMap[i][j] > 0 and pHandCardCountTwoMap[i][j] ~= 3 then
+				return
+			end
+		end
+	end
+	return 1 == pJiangCount
+end
+
+--!
+--! @brief      Determines if xiao qi dui.
+--!
+--! @param      pHandCardCountTwoMap  The hand card count map
+--! @param      pBlockCardMap      The block card map
+--!
+--! @return     True if xiao qi dui, False otherwise.
+--!
+function GameRuleYNPEMJ:isXiaoQiDui(pHandCardCountTwoMap, pBlockCardMap)
+	if #pBlockCardMap > 0 then return end
+	for i = 1, 5 do
+		if 0 ~= pHandCardCountTwoMap[i][10] % 2 then return end
+		for j = 1, 9 do
+			if 0 ~= pHandCardCountTwoMap[i][j] % 2 then return end
+		end
+	end
+	return true
+end
+
+
+--!
+--! @brief      Determines if long qi dui.
+--!
+--! @param      pHandCardCountTwoMap  The hand card count map
+--! @param      pBlockCardMap      The block card map
+--!
+--! @return     True if long qi dui, False otherwise.
+--!
+function GameRuleYNPEMJ:isLongQiDui(pHandCardCountTwoMap, pBlockCardMap)
+	if not self:isXiaoQiDui(pHandCardCountTwoMap, pBlockCardMap) then 
+		return
+	end
+	local pGangCount = 0
+	for i = 1, 5 do
+		for j = 1, 9 do
+			if pHandCardCountTwoMap[i][j] >= 4 then
+				pGangCount = pGangCount + 1
+			end
+		end
+	end
+	return pGangCount >= 1
+end
+
+--!
+--! @brief      Determines if men qing.
+--!
+--! @param      pHandCardCountTwoMap  The hand card count map
+--! @param      pBlockCardMap      The block card map
+--!
+--! @return     True if men qing, False otherwise.
+--!
+function GameRuleYNPEMJ:isMenQing(pHandCardCountTwoMap, pBlockCardMap)
+	-- 门清就是没碰，但明杠和暗杠也算门清
+	for k, v in pairs(pBlockCardMap) do
+		if not OperationType:isPeng(v.iOpValue) then
+			return false
+		end
+	end
+	return true
+end
+
+--!
+--! @brief      Determines if Four Hard Hua.
+--!
+--! @param      pHandCardCountTwoMap  The hand card count map
+--! @param      pBlockCardMap      The block card map
+--!
+--! @return     True if Four Hard Hua, False otherwise.
+--!
+function GameRuleYNPEMJ:isFourHardHua(pUserId)
+	return #self.m_pGameRound.m_pUserBuHuaTable[pUserId] > 3
+end
+
+
+--!
+--! @brief      Determines if Hun Yi Se.
+--!
+--! @param      pHandCardCountTwoMap  The hand card count map
+--! @param      pBlockCardMap      The block card map
+--!
+--! @return     True if Hun Yi Se, False otherwise.
+--!
+function GameRuleYNPEMJ:isHunYiSe(pHandCardCountTwoMap, pBlockCardMap)
+	local pZiCount = 0
+	for i=4,5 do
+		pZiCount = pZiCount + pHandCardCountTwoMap[i][10]
+	end
+	local pWan, pTong, pTiao = 0, 0, 0
+	if pHandCardCountTwoMap[1][10] >0 then
+		pWan = 1
+	end
+	if pHandCardCountTwoMap[2][10] >0 then
+		pTong = 1
+	end
+	if pHandCardCountTwoMap[3][10] >0 then
+		pTiao = 1
+	end
+
+	if (pWan + pTong + pTiao) > 1 or (pWan + pTong + pTiao) == 0 then
+		return false
+	end
+
+	for k, v in pairs(pBlockCardMap) do
+		local pType, pValue = self:onGetCardTypeAndValue(v.iCardValue)
+		if pType >= 4 and pType <= 5 then
+			pZiCount = pZiCount + 1
+		elseif 3 == pType then
+			pTiao = 1
+		elseif 2 == pType  then
+			pTong = 1
+		elseif 1 == pType  then
+			pWan = 1
+        end
+        if (pWan + pTong + pTiao) > 1 or (pWan + pTong + pTiao) == 0 then
+	    	return false
+	    end
+	end
+	if pZiCount <=0 then
+		return false
+	end
+	return true
+end
+
+--!
+--! @brief      Determines if Wu Hua Guo.
+--!
+--! @param      pHandCardCountTwoMap  The hand card count map
+--! @param      pBlockCardMap      The block card map
+--!
+--! @return     True if Wu Hua Guo, False otherwise.
+--!
+function GameRuleYNPEMJ:isWuHuaGuo(pUserId)
+	return #self.m_pGameRound.m_pUserBuHuaTable[pUserId] == 0
+end
+
+--!
+--! @brief      Determines if Ya Jue.
+--!
+--! @param      pHandCardCountTwoMap  The hand card count map
+--! @param      pBlockCardMap      The block card map
+--!
+--! @return     True if Ya Jue, False otherwise.
+--!
+function GameRuleYNPEMJ:isYaJue(pBlockCardMap, pCardValue)
+	for k, v in pairs(pBlockCardMap) do
+		if OperationType:isPeng(v.iOpValue) and v.iCardValue == pCardValue then
+			return true
+		end
+	end
+
+	return false
+end
+
+--!
+--! @brief      Determines if Tian Hu.
+--!
+--! @param      pHandCardCountTwoMap  The hand card count map
+--! @param      pBlockCardMap      The block card map
+--!
+--! @return     True if Tian Hu, False otherwise.
+--!
+function GameRuleYNPEMJ:isTianHu(pUser, pGameUsers)
+	for _, kUser in pairs(pGameUsers) do
+		local pOutCardMap = kUser:onGetOutCardMap()
+		local pBlockCardMap = kUser:onGetBlockCardMap()
+		if #pOutCardMap > 0 or #pBlockCardMap > 0 then
+			return false
+		end
+		if kUser:onGetIsHu() > 0 and kUser ~= pUser then
+			return false
+		end
+	end
+	return true
+end
+
+--!
+--! @brief      Determines if Di Hu.
+--!
+--! @param      pHandCardCountTwoMap  The hand card count map
+--! @param      pBlockCardMap      The block card map
+--!
+--! @return     True if Di Hu, False otherwise.
+--!
+function GameRuleYNPEMJ:isDiHu(pUser, pGameUsers)
+	local pOutCardMap = pUser:onGetOutCardMap()
+	if #pOutCardMap > 0 then return false end
+	for _, kUser in pairs(pGameUsers) do
+		local pOutCardMap = kUser:onGetOutCardMap()
+		local pBlockCardMap = kUser:onGetBlockCardMap()
+		if #pOutCardMap > 1 or #pBlockCardMap > 0 then
+			return false
+		end
+		if kUser:onGetIsHu() > 0 and kUser ~= pUser then
+			return false
+		end
+	end
+	return true
+end
+
+--!
+--! @brief      Determines if Quan Qiu Du Diao.
+--!
+--! @param      pHandCardCountTwoMap  The hand card count map
+--! @param      pBlockCardMap      The block card map
+--!
+--! @return     True if Quan Qiu Du Diao, False otherwise.
+--!
+function GameRuleYNPEMJ:isQuanQiuDuDiao(pHandCardCountTwoMap, pBlockCardMap)
+	local pCardCount = 0
+	for k, v in pairs(pBlockCardMap) do
+		if OperationType:isAnGang(v.iOpValue) or OperationType:isBuGang(v.iOpValue) or OperationType:isGang(v.iOpValue) then
+			pCardCount = pCardCount + 4
+		end
+
+		if OperationType:isPeng(v.iOpValue) then
+			pCardCount = pCardCount + 3
+		end
+	end
+
+	return pCardCount == 12 
+end
+
+--!
+--! @brief      Determines if shuang long qi dui.
+--!
+--! @param      pHandCardCountTwoMap  The hand card count map
+--! @param      pBlockCardMap      The block card map
+--!
+--! @return     True if shuang long qi dui, False otherwise.
+--!
+function GameRuleYNPEMJ:isShuangLongQiDui(pHandCardCountTwoMap, pBlockCardMap)
+	if not self:isXiaoQiDui(pHandCardCountTwoMap, pBlockCardMap) then 
+		return
+	end
+	local pGangCount = 0
+	for i = 1, 5 do
+		for j = 1, 9 do
+			if pHandCardCountTwoMap[i][j] >= 4 then
+				pGangCount = pGangCount + 1
+			end
+		end
+	end
+	return pGangCount >= 2
+end
+
+function GameRuleYNPEMJ:isSanLongQiDui(pHandCardCountTwoMap, pBlockCardMap)
+	if not self:isXiaoQiDui(pHandCardCountTwoMap, pBlockCardMap) then 
+		return
+	end
+	local pGangCount = 0
+	for i = 1, 5 do
+		for j = 1, 9 do
+			if pHandCardCountTwoMap[i][j] >= 4 then
+				pGangCount = pGangCount + 1
+			end
+		end
+	end
+	return pGangCount >= 3
+end
+
+function GameRuleYNPEMJ:onComplet(pHandCardCountTwoMap, pHasJiang)
+	local pRet = GameCore.onComplete(pHandCardCountTwoMap, pHasJiang and 1 or 0)
+	Log.d(TAG, "onComplete pRet[%s]", pRet)
+	return 0 == pRet
+end
+
+function GameRuleYNPEMJ:onGetAllGangTable(pHandCardCountTwoMap, pBlockCardMap, pCardValue)
+	local pGangCardTable = {}
+	if pCardValue and pCardValue > 0 then
+		local pType, pValue = self:onGetCardTypeAndValue(pCardValue)
+		if pHandCardCountTwoMap[pType][pValue] >= 4 then
+			pGangCardTable[#pGangCardTable + 1] = {
+				iCardValue = pCardValue,
+				iCardNum = 4,
+				iOpValue = OperationType.GANG,
+			}
+		end
+	else
+		for i = 1, 5 do
+			if pHandCardCountTwoMap[i][10] >= 4 then
+				for j = 1, 9 do
+					if pHandCardCountTwoMap[i][j] >= 4 then
+						local kCardValue = i * 10 + j
+						pGangCardTable[#pGangCardTable + 1] = {
+							iCardValue = kCardValue,
+							iCardNum = 4,
+							iOpValue = OperationType.AN_GANG,
+						}
+					end
+				end
+			end
+		end
+		for k, v in pairs(pBlockCardMap) do
+			local pType, pValue = self:onGetCardTypeAndValue(v.iCardValue)
+			if OperationType:isPeng(v.iOpValue) and pHandCardCountTwoMap[pType][pValue] > 0 then
+				pGangCardTable[#pGangCardTable + 1] = {
+					iCardValue = v.iCardValue,
+					iCardNum = 1,
+					iOpValue = OperationType.BU_GANG,
+				}
+			end
+		end
+	end
+	return pGangCardTable
+end
+
+function GameRuleYNPEMJ:isCanYiPaoSanXiang(pGameUsers)
+	local pHuCount = 0
+	local pFangPaoUserId = 0
+	for k, v in pairs(pGameUsers) do
+		if v:onGetIsHu() > 0 then
+			pHuCount = pHuCount + 1
+		else
+			pFangPaoUserId = v:onGetUserId()
+		end
+	end
+
+	return pHuCount == 3
+end
+
+function GameRuleYNPEMJ:onGetUserMoneyByUserId(pUserId, pGameUsers)
+	for k, v in pairs(pGameUsers) do
+		if v:onGetUserId() == pUserId then
+			return v:onGetMoney()
+		end
+	end
+
+	return 0
+end
+
+function GameRuleYNPEMJ:onGameRoundStop(result, pAllTurnMoneyTable, pGameUsers)
+	local pExtendInfoTable = {}
+	local pTurnMoneyTable = {}
+	local pHuUserId = 0
+	for k, v in pairs(pGameUsers) do
+		pExtendInfoTable[v:onGetUserId()] = {
+			iUserId = v:onGetUserId(),
+			iFan = 0,
+			iName = "",
+			iHuType = DefineType.MAHJONG_HUTYPE_NONE,
+			iHuCard = 0,
+		}
+		pTurnMoneyTable[v:onGetUserId()] = 0
+
+		if v:onGetIsHu() > 0 then
+			pHuUserId = v:onGetUserId()
+		end
+	end
+
+	self.m_pGameRound.m_pPreRoundInfo.iBiXiaHu = self.m_pIsBiXiaHu
+
+	local pIsYiPaoSanXiang, pFangPaoUserId = self:isCanYiPaoSanXiang(pGameUsers) -- 一炮三响：三家胡的人直接干，放炮的人赢
+	if pIsYiPaoSanXiang or self.m_pIsCanZhengChan then
+		local pTotalMoney = 0
+		pHuUserId = pIsYiPaoSanXiang and pFangPaoUserId or pHuUserId
+		for k, v in pairs(pAllTurnMoneyTable.iHuTurnMoneyTable) do
+			-- 计算所有人的分数
+			pExtendInfoTable[v.iUserId].iFan = v.iFan
+			pExtendInfoTable[v.iUserId].iName = v.iName
+			pExtendInfoTable[v.iUserId].iHuType = v.iHuType
+			pExtendInfoTable[v.iUserId].iHuCard = v.iHuCard
+			if pHuUserId ~= v.iUserId then
+				pTurnMoneyTable[v.iUserId] = 0 - self:onGetUserMoneyByUserId(v.iUserId, pGameUsers)
+				pTotalMoney = pTotalMoney + self:onGetUserMoneyByUserId(v.iUserId, pGameUsers)
+			end
+		end
+
+		pTurnMoneyTable[pHuUserId] = pTotalMoney
+	else
+		for k, v in pairs(pAllTurnMoneyTable.iHuTurnMoneyTable) do
+			-- 计算所有人的分数
+			pExtendInfoTable[v.iUserId].iFan = v.iFan
+			pExtendInfoTable[v.iUserId].iName = v.iName
+			pExtendInfoTable[v.iUserId].iHuType = v.iHuType
+			pExtendInfoTable[v.iUserId].iHuCard = v.iHuCard
+			for p, q in pairs(v.iTurnMoneyTable) do
+				pTurnMoneyTable[p] = pTurnMoneyTable[p] + q 
+			end
+		end
+	end 
+
+	return pExtendInfoTable, pTurnMoneyTable
+end
+
+function GameRuleYNPEMJ:onGameCurrentSettlement(pUser, tUser, pGameUsers, pValue)
+	local name = "ServerBCMahjongMoneyUpdate"
+	local info = {}
+	info.iMoneyTable = {}
+	if not pUser then return end
+	if tUser and tUser == pUser then return end
+
+	if self.m_pGameRound.m_pPreRoundInfo.iBiXiaHu then
+		pValue = pValue * 2 -- 比下胡结算是现场汇也相对应×2
+	end
+
+	if tUser then
+		pUser:onSetMoney(pUser:onGetMoney() + pValue)
+		tUser:onSetMoney(tUser:onGetMoney() - pValue)
+	else
+		for k,v in pairs(pGameUsers) do
+			if pUser:onGetUserId() ~= v:onGetUserId() then
+				v:onSetMoney(v:onGetMoney() - pValue)
+				pUser:onSetMoney(pUser:onGetMoney() + pValue)
+			end
+		end
+	end
+
+	local pZeroMoney = 0
+	for k, v in pairs(pGameUsers) do
+		local iMoneyInfo = {}
+		local pTempMoney = v:onGetMoney()
+		iMoneyInfo.iUserId = v:onGetUserId()
+		iMoneyInfo.iMoney = pTempMoney
+		table.insert(info.iMoneyTable, iMoneyInfo)
+
+		if pTempMoney <= 0 then
+			pZeroMoney = pZeroMoney + 1
+		end
+	end
+	self.m_pGameRound:onGetGameTable():onBroadcastTableUsers(name, info)
+
+	if pZeroMoney > 1 then
+		self.m_pGameRound:onGameRoundStop(1) -- 当有两家携带游戏币为0时，游戏立刻结束 按流局处理
+	end
+
+	self.m_pIsBiXiaHu = true
+end
+
+function GameRuleYNPEMJ:onGetFengPengCount(pUser)
+	local pHandCardMap = pUser:onGetHandCardMap()
+	local pHandCardCountTwoMap = self:onGetHandCardCountTwoMap(pHandCardMap)
+	local pFengKeCount = 0
+	for i = 1, 4 do
+		if pHandCardCountTwoMap[4][i] > 2 then
+			pFengKeCount = pFengKeCount + 1
+		end
+	end
+
+	return pFengKeCount
+end
+
+function GameRuleYNPEMJ:onGetYaDang(pUser, pCardValue)
+	local pType, pValue = self:onGetCardTypeAndValue(pCardValue)
+	if pType < 4 and pValue - 1 > 0 and pValue + 1 < 10 then
+		local pHandCardMap = pUser:onGetHandCardMap()
+		local pHandCardCountTwoMap = self:onGetHandCardCountTwoMap(pHandCardMap)
+		if pHandCardCountTwoMap[pType][pValue -1] > 0 and pHandCardCountTwoMap[pType][pValue +1] > 0 then
+			return true
+		end
+	end
+
+	return false
+end
+
+function GameRuleYNPEMJ:onGetDuZhan(pUser, pCardValue)
+	local pHandCardMap = pUser:onGetHandCardMap()
+	if #pHandCardMap > 1 then return false end
+	for _, kCardValue in pairs(pHandCardMap) do
+		if kCardValue == pCardValue then
+			return true
+		end
+	end
+
+	return false
+end
+
+function GameRuleYNPEMJ:onGetBianZhi(pUser, pCardValue)
+	local pType, pValue = self:onGetCardTypeAndValue(pCardValue)
+	if pType < 4 and pValue + 2 < 10 then
+		local pHandCardMap = pUser:onGetHandCardMap()
+		local pHandCardCountTwoMap = self:onGetHandCardCountTwoMap(pHandCardMap)
+		if pHandCardCountTwoMap[pType][pValue +1] > 0 and pHandCardCountTwoMap[pType][pValue +2] > 0 then
+			return true
+		end
+	end
+
+	return false
+end
+
+function GameRuleYNPEMJ:onGetQueYiMen(pUser)
+	local pHuaSeTable = {}
+	local pBlockCardMap = pUser:onGetBlockCardMap()
+	for k, v in pairs(pBlockCardMap) do
+		local kType, kValue = self:onGetCardTypeAndValue(v.iCardValue)
+		pHuaSeTable[kType] = true
+	end
+	for i = 1, 3 do
+		pHuaSeTable[i] = pHuaSeTable[i] or pHandCardCountTwoMap[i][10] > 0 
+	end
+	local pHuaSeCount = 0
+	for i = 1, 3 do
+		pHuaSeCount = pHuaSeCount + (pHuaSeTable[i] and 1 or 0)
+	end
+
+	return pHuaSeCount == 2
+end
+
+function GameRuleYNPEMJ:onGetBlockHua(pUser)
+	local pHuaCount = 0
+	local pBlockCardMap = pUser:onGetBlockCardMap()
+	for k, v in pairs(pBlockCardMap) do
+		local tType, _ = self:onGetCardTypeAndValue(v.iCardValue)
+		if OperationType:isGang(v.iOpValue) then
+			if tType < 4 then
+				pHuaCount = pHuaCount + 1
+			else
+				pHuaCount = pHuaCount + 2
+			end
+		end
+
+		if OperationType:isAnGang(v.iOpValue) then
+			if tType < 4 then
+				pHuaCount = pHuaCount + 2
+			else
+				pHuaCount = pHuaCount + 3
+			end
+		end
+
+		if OperationType:isPeng(v.iOpValue) then
+			if tType > 3 then
+				pHuaCount = pHuaCount + 1
+			end
+		end
+	end	
+
+	return pHuaCount
+end
+
+
+function GameRuleYNPEMJ:onDealAddToHuaWhenHasHu(pUser, pCardValue)
+	local pAddToFanTable = {
+		iName = "",
+		iFan = 0,
+	}
+
+	local pHardHuaCount = #self.m_pGameRound.m_pUserBuHuaTable[pUser:onGetUserId()]
+	local pSoftHuaCount = 0
+	local pDiZi = 10 -- 底子为10 
+
+	pSoftHuaCount = pSoftHuaCount + self:onGetFengPengCount(pUser)
+	if self:onGetYaDang(pUser, pCardValue) then
+		pSoftHuaCount = pSoftHuaCount + 1
+	end
+
+	if self:onGetDuZhan(pUser, pCardValue) then
+		pSoftHuaCount = pSoftHuaCount + 1
+	end
+
+	if self:onGetBianZhi(pUser, pCardValue) then
+		pSoftHuaCount = pSoftHuaCount + 1
+	end
+
+	if self:onGetQueYiMen(pUser) then
+		pSoftHuaCount = pSoftHuaCount + 1
+	end
+
+	pSoftHuaCount = pSoftHuaCount + self:onGetBlockHua(pUser)
+
+	if self:isPlaytypeHuaZaer(self.m_pPlaytype) then
+		pHardHuaCount = pHardHuaCount * 2
+		pSoftHuaCount = pSoftHuaCount * 2
+	end
+
+	if self.m_pGameRound.m_pPreRoundInfo.iBiXiaHu then
+		-- 比下胡结算是胡牌总花数×2
+		pHardHuaCount = pHardHuaCount * 2
+		pSoftHuaCount = pSoftHuaCount * 2
+	end
+
+	if pHardHuaCount > 0 then
+		pAddToFanTable.iName = string.format("%s %s", pAddToFanTable.iName, "硬花*")
+		pAddToFanTable.iName = string.format("%s%d", pAddToFanTable.iName, pHardHuaCount)
+		pAddToFanTable.iFan = pAddToFanTable.iFan + pHardHuaCount
+	end
+
+	if pSoftHuaCount > 0 then
+		pAddToFanTable.iName = string.format("%s %s", pAddToFanTable.iName, "软花*")
+		pAddToFanTable.iName = string.format("%s%d", pAddToFanTable.iName, pSoftHuaCount)
+		pAddToFanTable.iFan = pAddToFanTable.iFan + pSoftHuaCount
+	end
+
+	pAddToFanTable.iName = string.format("%s %s", pAddToFanTable.iName, "底子")
+	pAddToFanTable.iFan = pAddToFanTable.iFan + pDiZi
+
+	return pAddToFanTable
+end
+
+function GameRuleYNPEMJ:onGetCardTypeAndValue(pCardValue)
+	pCardValue = pCardValue or 10
+	return math.floor(pCardValue / 10), pCardValue % 10
+end
+
+return GameRuleYNPEMJ

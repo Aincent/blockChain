@@ -1,0 +1,142 @@
+
+local PlaytypeConfigJSNJ = {}
+
+PlaytypeConfigJSNJ.iName = "南京麻将"
+PlaytypeConfigJSNJ.iGameLevel = 1
+PlaytypeConfigJSNJ.iGameCode = 100
+
+PlaytypeConfigJSNJ.iVersion = 1
+
+PlaytypeConfigJSNJ.iGameRoundPath = {
+    [0x0101] = "logic/game/mahjong/gameRound",
+}
+
+PlaytypeConfigJSNJ.iGameRulePath = {
+    [0x0101] = "logic/game/mahjong/gameRuleJSNJJYZ",
+}
+
+PlaytypeConfigJSNJ.iLocalGameTypeMap = {
+	["0x0100"] = {
+		["0x01"] = {
+			iName = "进园子",
+			iType = 0x01,
+		},
+	},
+}
+
+PlaytypeConfigJSNJ.iGameUserCardMap = {
+	iGameMaxUserCount = 4,
+	iGameMaxCardCount = 144,
+	iGameDealCardCount = 13,
+}
+
+PlaytypeConfigJSNJ.iGameUpperLimitTable = {
+	["0x0100"] = {
+		["0x01"] = {
+			iMinValue = 95,
+			iMaxValue  = 100, 
+		},
+	}	
+}
+
+-- 某个游戏下的特定玩法
+PlaytypeConfigJSNJ.iGamePlaytypeTable = {
+	["0x0100"] = {
+		["0x01"] = {
+			MAHJONG_PLAYTYPE_BASHU = {
+				iValue = 0x01,
+				iName = "把数(接庄比)",
+			},
+			MAHJONG_PLAYTYPE_QUANSHU = {
+				iValue = 0x02,
+				iName = "圈数(占庄比)",
+			},
+			MAHJONG_PLAYTYPE_HUAZAER = {
+				iValue = 0x04,
+				iName = "花砸2",
+			},
+			MAHJONG_PLAYTYPE_DONGNANXIBEIFAKUAN = {
+				iValue = 0x08,
+				iName = "东南西北罚款",
+			},
+		},
+	},
+}
+
+-- 好友对战场的配置
+PlaytypeConfigJSNJ.iGamePlaytypeRuleTable = {
+	["0x0100"] = {
+		["0x01"] = {
+			iMutexTable = {
+			},
+			iTogetherTable = {
+			},
+			iOneOfTwoTable = {
+				{0x01, 0x02},
+			},
+			iSelectNotShowTable = {
+			},
+		},
+	},
+}
+
+PlaytypeConfigJSNJ.iGameUserCountTable = {
+	["0x0100"] = {
+		["0x01"] = {
+			["4人"] = 4,
+			["3人"] = 3,
+			["2人"] = 2,
+		},
+	}
+}
+
+PlaytypeConfigJSNJ.iGameCircleRoomCardTable = {
+	["0x0100"] = {
+		["0x01"] = {
+			["0x01"] = {
+				["4"] = {
+					iValue = 2,
+					iName = "把",
+				},
+				["8"] = {
+					iValue = 3,
+      				iName = "把",
+				},
+				["12"] = {
+					iValue = 5,
+      				iName = "把"
+				},
+				["16"] = {
+					iValue = 8,
+      				iName = "把"
+				},
+			},
+			["0x02"] = {
+				["1"] = {
+					iValue = 4,
+					iName = "圈",
+				},
+				["2"] = {
+					iValue = 4,
+      				iName = "圈",
+				},
+				["3"] = {
+					iValue = 6,
+      				iName = "圈"
+				},
+				["4"] = {
+					iValue = 8,
+      				iName = "圈"
+				},
+			}
+		},
+	},
+}
+
+
+PlaytypeConfigJSNJ.iGameRegisterTable = {
+	Money = 3000,
+	RoomCardNum = 10,
+}
+
+return PlaytypeConfigJSNJ

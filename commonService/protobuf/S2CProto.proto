@@ -1,0 +1,13 @@
+package S2C;  //定义包名
+
+//用户登陆信息
+message ServerUserLoginHall{
+	required int32 iStatus = 1; //状态, 1登陆成功
+	required string iLoginMsg = 2; //登陆的消息
+	required string iUserInfo = 3; //用户信息
+}
+
+//心跳包
+message ServerUserHeartbeat {
+	
+}

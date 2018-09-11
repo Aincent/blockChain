@@ -1,0 +1,11 @@
+package C2S;  //定义包名
+
+//客户端请求登陆
+message ClientUserLoginHall { 
+	required string iUserInfo = 1; //json用户信息
+}
+
+//心跳包
+message ClientUserHeartbeat { 
+   
+}
