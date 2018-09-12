@@ -1,3 +1,6 @@
 [submodule "jemalloc"]
-	path = jemalloc
+	path = 3rd/jemalloc
 	url = https://github.com/jemalloc/jemalloc.git
+[submodule "pbc"]
+	path = 3rd/pbc
+	url = https://github.com/cloudwu/pbc.git
